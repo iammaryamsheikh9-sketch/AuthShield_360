@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.env*
+!.env.example
+AuthShield_360_ServerSide/data/db.json
+/data/*.json
+AuthShield_360_ServerSide/data/*.json

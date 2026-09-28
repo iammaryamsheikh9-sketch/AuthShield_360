@@ -1,0 +1,802 @@
+Test ID	User/Role	Test Action	Expected Result	Actual Result	Pass/Fail	Evidence
+AUTH-001	Student	Valid password-only login	Login succeeds	Succeeded	PASS	Screenshot
+AUTH-002	Student	Wrong password	Login denied	Denied	PASS	Log
+AUTH-003	Student	Correct password without MFA	MFA required	MFA required	PASS	Screenshot
+AUTH-004	Student	Valid OTP	Login succeeds	Succeeded	PASS	Log
+AUTH-005	Student	Invalid OTP	Login denied	Denied	PASS	Log
+AUTH-006	Student	Expired OTP	Login denied	Denied	PASS	Log
+AUTH-007	Student	Repeated failures	Account protected	Locked	PASS	Log
+AUTH-008	Student	Access Teacher resource	Access denied	Denied	PASS	Screenshot
+AUTH-009	Teacher	Access Admin resource	Access denied	Denied	PASS	Screenshot
+AUTH-010	Student	Reuse session after logout	Session invalid	Denied	PASS	ZAP/Burp evidence
+
+
+authshield360-backend/
+│
+├── src/
+│   ├── config/
+│   │   └── database.js
+│   │
+│   ├── models/
+│   │   ├── User.js
+│   │   ├── Role.js
+│   │   ├── Student.js
+│   │   ├── AcademicRecord.js
+│   │   ├── MfaMethod.js
+│   │   ├── Session.js
+│   │   ├── LoginAttempt.js
+│   │   ├── AuditLog.js
+│   │   └── SecurityTestResult.js
+│   │
+│   ├── controllers/
+│   │   ├── authController.js
+│   │   ├── mfaController.js
+│   │   ├── userController.js
+│   │   └── studentController.js
+│   │
+│   ├── routes/
+│   │   ├── authRoutes.js
+│   │   ├── mfaRoutes.js
+│   │   ├── userRoutes.js
+│   │   └── studentRoutes.js
+│   │
+│   ├── middleware/
+│   │   ├── authMiddleware.js
+│   │   ├── roleMiddleware.js
+│   │   └── rateLimitMiddleware.js
+│   │
+│   ├── services/
+│   │   ├── authService.js
+│   │   ├── mfaService.js
+│   │   └── auditService.js
+│   │
+│   └── server.js
+│
+├── .env
+├── .gitignore
+├── package.json
+└── README.md
+
+
+Use Pkg for create backend
+
+1. Core backend packages
+npm install express mongoose dotenv cors helmet
+
+express — backend REST API
+
+mongoose — MongoDB connection and models
+
+dotenv — environment variables/secrets
+
+cors — frontend/backend communication
+
+helmet — HTTP security headers
+
+2. Authentication & security
+npm install bcrypt jsonwebtoken otplib
+
+bcrypt — securely hash passwords
+
+jsonwebtoken — authentication tokens, if using JWT
+
+otplib — TOTP/OTP-based MFA
+
+For your requirements, bcrypt + TOTP is a suitable implementation for a lab project.
+
+3. Validation
+npm install zod
+
+Use zod to validate things such as:
+
+Login request
+Registration request
+MFA verification
+Role changes
+Password changes
+
+4. Logging
+npm install pino pino-http
+
+These can help you record backend events without putting passwords or MFA secrets into logs.
+
+5. Development packages
+npm install -D nodemon
+
+Then your package.json can have:
+
+{
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  }
+}
+
+Recommended complete installation
+You can install everything with:
+
+npm install express mongoose dotenv cors helmet bcrypt jsonwebtoken otplib zod pino pino-http
+npm install -D nodemon
+
+
+express
+mongoose
+dotenv
+cors
+helmet
+bcrypt
+jsonwebtoken
+otplib
+zod
+pino
+pino-http
+express-rate-limit
+
+
+
+
+User
+
+Role
+
+PasswordCredential
+
+MfaMethod
+
+Session
+
+LoginAttempt
+
+AuditLog
+
+Student
+
+AcademicRecord
+
+SecurityTestResult
+
+The first step is to define the schemas cleanly, with security requirements such as no plaintext passwords, protected MFA secrets, RBAC, auditability, and timestamps.
+
+1. User.js
+import mongoose from "mongoose";
+
+const userSchema = new mongoose.Schema(
+  {
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      minlength: 3,
+      maxlength: 50,
+    },
+
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+
+    role: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Role",
+      required: true,
+    },
+
+    status: {
+      type: String,
+      enum: ["active", "locked", "disabled"],
+      default: "active",
+    },
+
+    lastLoginAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("User", userSchema);
+
+2. Role.js
+import mongoose from "mongoose";
+
+const roleSchema = new mongoose.Schema(
+  {
+    name: {
+      type: String,
+      enum: ["Student", "Teacher", "Administrator"],
+      required: true,
+      unique: true,
+    },
+
+    permissions: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("Role", roleSchema);
+
+Example:
+
+{
+  name: "Student",
+  permissions: [
+    "profile:read",
+    "assignment:read",
+    "examResult:read"
+  ]
+}
+
+3. PasswordCredential.js
+Never store the actual password.
+
+import mongoose from "mongoose";
+
+const passwordCredentialSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      unique: true,
+    },
+
+    passwordHash: {
+      type: String,
+      required: true,
+      select: false,
+    },
+
+    algorithm: {
+      type: String,
+      default: "bcrypt",
+    },
+
+    passwordChangedAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    failedAttempts: {
+      type: Number,
+      default: 0,
+    },
+
+    lockedUntil: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model(
+  "PasswordCredential",
+  passwordCredentialSchema
+);
+
+4. MfaMethod.js
+For your OTP/TOTP requirement:
+
+import mongoose from "mongoose";
+
+const mfaMethodSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+
+    type: {
+      type: String,
+      enum: ["TOTP"],
+      default: "TOTP",
+    },
+
+    secretEncrypted: {
+      type: String,
+      required: true,
+      select: false,
+    },
+
+    enabled: {
+      type: Boolean,
+      default: false,
+    },
+
+    verified: {
+      type: Boolean,
+      default: false,
+    },
+
+    enrolledAt: {
+      type: Date,
+      default: null,
+    },
+
+    lastUsedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("MfaMethod", mfaMethodSchema);
+
+The MFA secret should not be stored as normal plaintext.
+
+5. Session.js
+import mongoose from "mongoose";
+
+const sessionSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+
+    sessionTokenHash: {
+      type: String,
+      required: true,
+      unique: true,
+      select: false,
+    },
+
+    ipAddress: {
+      type: String,
+    },
+
+    userAgent: {
+      type: String,
+    },
+
+    authenticatedWithMfa: {
+      type: Boolean,
+      default: false,
+    },
+
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
+
+    revokedAt: {
+      type: Date,
+      default: null,
+    },
+  }
+);
+
+sessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export default mongoose.model("Session", sessionSchema);
+
+This helps demonstrate:
+
+Login
+
+Logout
+
+Session expiration
+
+Session invalidation
+
+Attempted reuse of an old session
+
+6. LoginAttempt.js
+import mongoose from "mongoose";
+
+const loginAttemptSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    username: {
+      type: String,
+      required: true,
+    },
+
+    authenticationMode: {
+      type: String,
+      enum: ["password-only", "password+mfa"],
+      required: true,
+    },
+
+    factor: {
+      type: String,
+      enum: ["password", "otp", "none"],
+      required: true,
+    },
+
+    result: {
+      type: String,
+      enum: ["success", "failure"],
+      required: true,
+    },
+
+    failureReason: {
+      type: String,
+      enum: [
+        "invalid_password",
+        "invalid_otp",
+        "expired_otp",
+        "mfa_required",
+        "account_locked",
+        "account_disabled",
+        "rate_limited",
+        "unknown_user",
+        "none",
+      ],
+      default: "none",
+    },
+
+    ipAddress: String,
+
+    userAgent: String,
+
+    durationMs: Number,
+
+    startedAt: Date,
+
+    completedAt: Date,
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("LoginAttempt", loginAttemptSchema);
+
+7. AuditLog.js
+This is important for your authentication monitoring and auditability requirements.
+
+import mongoose from "mongoose";
+
+const auditLogSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    username: {
+      type: String,
+      default: null,
+    },
+
+    role: {
+      type: String,
+      enum: ["Student", "Teacher", "Administrator", "Unknown"],
+      default: "Unknown",
+    },
+
+    eventType: {
+      type: String,
+      enum: [
+        "LOGIN_SUCCESS",
+        "LOGIN_FAILURE",
+        "MFA_SUCCESS",
+        "MFA_FAILURE",
+        "ACCOUNT_LOCKED",
+        "ACCOUNT_UNLOCKED",
+        "ACCESS_GRANTED",
+        "ACCESS_DENIED",
+        "LOGOUT",
+        "SESSION_EXPIRED",
+        "SESSION_REVOKED",
+        "MFA_ENROLLED",
+        "MFA_DISABLED",
+        "PASSWORD_CHANGED",
+        "ADMIN_ACTION",
+      ],
+      required: true,
+    },
+
+    action: {
+      type: String,
+      required: true,
+    },
+
+    resource: {
+      type: String,
+      default: null,
+    },
+
+    result: {
+      type: String,
+      enum: ["success", "failure", "denied"],
+      required: true,
+    },
+
+    ipAddress: String,
+
+    userAgent: String,
+
+    sessionId: String,
+
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("AuditLog", auditLogSchema);
+
+8. Student.js
+import mongoose from "mongoose";
+
+const studentSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      unique: true,
+    },
+
+    studentId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+
+    firstName: {
+      type: String,
+      required: true,
+    },
+
+    lastName: {
+      type: String,
+      required: true,
+    },
+
+    className: {
+      type: String,
+      required: true,
+    },
+
+    enrollmentYear: {
+      type: Number,
+      required: true,
+    },
+
+    status: {
+      type: String,
+      enum: ["active", "inactive", "graduated"],
+      default: "active",
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("Student", studentSchema);
+
+9. AcademicRecord.js
+This covers assignments and examination results.
+
+import mongoose from "mongoose";
+
+const academicRecordSchema = new mongoose.Schema(
+  {
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Student",
+      required: true,
+    },
+
+    type: {
+      type: String,
+      enum: ["assignment", "exam"],
+      required: true,
+    },
+
+    subject: {
+      type: String,
+      required: true,
+    },
+
+    title: {
+      type: String,
+      required: true,
+    },
+
+    description: {
+      type: String,
+      default: "",
+    },
+
+    score: {
+      type: Number,
+      min: 0,
+      max: 100,
+      default: null,
+    },
+
+    maxScore: {
+      type: Number,
+      min: 1,
+      default: 100,
+    },
+
+    dueDate: {
+      type: Date,
+      default: null,
+    },
+
+    submittedAt: {
+      type: Date,
+      default: null,
+    },
+
+    gradedAt: {
+      type: Date,
+      default: null,
+    },
+
+    teacher: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model("AcademicRecord", academicRecordSchema);
+
+10. SecurityTestResult.js
+This directly represents your mandatory Identity Security Test Matrix.
+
+import mongoose from "mongoose";
+
+const securityTestResultSchema = new mongoose.Schema(
+  {
+    testId: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    userRole: {
+      type: String,
+      enum: ["Student", "Teacher", "Administrator"],
+      required: true,
+    },
+
+    testAction: {
+      type: String,
+      required: true,
+    },
+
+    expectedResult: {
+      type: String,
+      required: true,
+    },
+
+    actualResult: {
+      type: String,
+      required: true,
+    },
+
+    status: {
+      type: String,
+      enum: ["PASS", "FAIL", "NOT_TESTED"],
+      required: true,
+    },
+
+    loginTimeMs: {
+      type: Number,
+      default: null,
+    },
+
+    evidence: [
+      {
+        type: String,
+      },
+    ],
+
+    notes: {
+      type: String,
+      default: "",
+    },
+
+    tester: {
+      type: String,
+      required: true,
+    },
+
+    testedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model(
+  "SecurityTestResult",
+  securityTestResultSchema
+);
+
+Final schema architecture
+MongoDB
+│
+├── users
+│     └── role → roles
+│
+├── roles
+│
+├── passwordCredentials
+│     └── user → users
+│
+├── mfaMethods
+│     └── user → users
+│
+├── sessions
+│     └── user → users
+│
+├── loginAttempts
+│     └── user → users
+│
+├── auditLogs
+│     └── user → users
+│
+├── students
+│     └── user → users
+│
+├── academicRecords
+│     ├── student → students
+│     └── teacher → users
+│
+└── securityTestResults
+      └── user → users
+
+
+masoodahsan999_db_user
+
+hwWNOcuPNVYEkDiN
